@@ -1,0 +1,132 @@
+# SSH Honeypot (Cowrie) + Wazuh SIEM — single-node lab stack
+#
+# Runs entirely in Docker. No VM required. Needs Docker + Docker Compose v2
+# and ~4 GB RAM free (Wazuh indexer is the heavy part).
+#
+#   Attackers hit Cowrie on host port 2222 (map to 22 in production tests).
+#   Cowrie writes JSON events to a shared volume.
+#   Wazuh manager reads that JSON, decodes it with the custom Cowrie ruleset,
+#   and raises alerts you can explore in the Wazuh dashboard.
+#
+# First run: ./scripts/setup.sh   (generates indexer certs + sysctl tuning)
+
+name: cowrie-wazuh-lab
+
+services:
+  cowrie:
+    image: cowrie/cowrie:latest
+    container_name: cowrie
+    restart: unless-stopped
+    ports:
+      - "2222:2222"          # SSH honeypot (point real scanners here)
+      - "2223:2223"          # Telnet honeypot
+    volumes:
+      - ./cowrie/etc/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - cowrie_log:/cowrie/cowrie-git/var/log/cowrie
+    networks: [lab]
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.9.0
+    container_name: wazuh.manager
+    restart: unless-stopped
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 655360, hard: 655360 }
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "55000:55000"
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=admin
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=MyS3cr37P450r.*-
+    volumes:
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+      - ./wazuh/certs/root-ca.pem:/etc/ssl/root-ca.pem:ro
+      - ./wazuh/certs/manager.pem:/etc/ssl/filebeat.pem:ro
+      - ./wazuh/certs/manager-key.pem:/etc/ssl/filebeat.key:ro
+      # Cowrie's JSON log, mounted read-only so the manager can tail it:
+      - cowrie_log:/var/log/cowrie:ro
+      # Custom Cowrie decoders + rules + configuration injected via wazuh-config-mount:
+      - ./wazuh/decoders/cowrie_decoders.xml:/wazuh-config-mount/etc/decoders/cowrie_decoders.xml:ro
+      - ./wazuh/rules/cowrie_rules.xml:/wazuh-config-mount/etc/rules/cowrie_rules.xml:ro
+      - ./wazuh/ossec.conf:/wazuh-config-mount/etc/ossec.conf:ro
+    networks: [lab]
+    depends_on: [wazuh.indexer]
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.9.0
+    container_name: wazuh.indexer
+    restart: unless-stopped
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 655360, hard: 655360 }
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - wazuh_indexer_data:/var/lib/wazuh-indexer
+      - ./wazuh/certs/root-ca.pem:/usr/share/wazuh-indexer/certs/root-ca.pem:ro
+      - ./wazuh/certs/indexer.pem:/usr/share/wazuh-indexer/certs/indexer.pem:ro
+      - ./wazuh/certs/indexer-key.pem:/usr/share/wazuh-indexer/certs/indexer-key.pem:ro
+      - ./wazuh/certs/admin.pem:/usr/share/wazuh-indexer/certs/admin.pem:ro
+      - ./wazuh/certs/admin-key.pem:/usr/share/wazuh-indexer/certs/admin-key.pem:ro
+      - ./wazuh/opensearch.yml:/usr/share/wazuh-indexer/opensearch.yml:ro
+    networks: [lab]
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.9.0
+    container_name: wazuh.dashboard
+    restart: unless-stopped
+    ports:
+      - "5601:5601"          # https://localhost:5601  (admin / SecretPassword)
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=admin
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=kibanaserver
+      - WAZUH_API_URL=https://wazuh.manager
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=MyS3cr37P450r.*-
+    volumes:
+      - ./wazuh/certs/dashboard.pem:/usr/share/wazuh-dashboard/certs/dashboard.pem:ro
+      - ./wazuh/certs/dashboard-key.pem:/usr/share/wazuh-dashboard/certs/dashboard-key.pem:ro
+      - ./wazuh/certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem:ro
+      - ./wazuh/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+    networks: [lab]
+    depends_on: [wazuh.indexer]
+
+volumes:
+  cowrie_log:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh_indexer_data:
+
+networks:
+  lab:
+    driver: bridge

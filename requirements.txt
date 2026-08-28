@@ -1,0 +1,4 @@
+# Core pipeline is pure Python 3.9+ standard library.
+# Optional extras:
+streamlit>=1.28
+# pyyaml>=6.0        # only needed for full YAML validation in scripts/validate.py
