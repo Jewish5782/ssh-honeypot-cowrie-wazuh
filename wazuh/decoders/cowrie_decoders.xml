@@ -1,0 +1,8 @@
+<!--
+  Custom decoder for Cowrie JSON events.
+  Uses Wazuh's JSON decoder plugin and tags matching events as "cowrie-json".
+-->
+<decoder name="cowrie-json">
+  <prematch>"eventid"\s*:\s*"cowrie\.</prematch>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>
